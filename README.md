@@ -2,6 +2,14 @@
 
 Places your close friends have actually been, on one map.
 
+**Try it now, no sign-in:** https://mycircle-inky.vercel.app/?demo
+
+![A city in MyCircle: friends' places as pins, with a "Plan a day here" card](docs/screenshot-city.jpg)
+
+![A day plan: morning, afternoon and evening stops joined by a walking route along real streets](docs/screenshot-plan.jpg)
+
+*Map data © OpenStreetMap contributors. Demo places and people are sample data.*
+
 Search a city ("New York") and the map flies there. The side panel lists the friends in your circle who have been there. Pick a friend and the map shows only their places as numbered pins, with their rating, review and tip for each one.
 
 ## Run it on your computer
