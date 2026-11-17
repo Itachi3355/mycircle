@@ -35,7 +35,8 @@ Then use **Invite friends** in your account menu (the round button, top right) t
 
 **Data** lives in the `mycircle` Supabase project:
 
-- **Tables:** `profiles`, `circles`, `circle_members`, `places`, `reviews` and `photos`.
+- **Tables:** `profiles`, `circles`, `circle_members`, `places`, `reviews`, `photos` and `trips`.
+- **Trip budgets:** in a city's panel, "Add what your trip cost" saves one total per person per city (`trips`), in the currency they paid, with optional days, number of people, month and a short note. The city shows each budget, its cost per person per day, and a typical figure: the median per person per day in the currency most people used. Amounts are never converted between currencies.
 - **Photos:** "Add photos" in a place's popup. Each photo is shrunk to 1600px and re-saved as a JPEG in the browser (which also strips the camera's location data), then stored in the private `photos` storage bucket at `<place id>/<random>.jpg`. Only members of that place's circle can view them, through links that expire after an hour. You can delete only your own photos.
 - **Visibility:** row-level security limits everything to your own circles. People outside a circle see nothing, and friends can only edit their own reviews.
 - **Places:** each place is stored once per circle. A place disappears when its last review is deleted.

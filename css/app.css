@@ -474,6 +474,20 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; line-height
 .rate label svg { transition: fill .1s ease, transform .12s var(--ease-out); }
 @media (hover: hover) and (pointer: fine) { .rate label:hover svg { transform: scale(1.15); } }
 
+/* ---------- trip budgets ---------- */
+.budget-typical { margin: 2px 0 8px; padding: 10px 12px; border-radius: 12px; background: var(--accent-soft); color: var(--ink-2); font-size: 13px; }
+.budget-typical b { color: var(--ink); font-size: 15px; font-variant-numeric: tabular-nums; }
+.budget-typical span { color: var(--muted); }
+.budget-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; }
+.budget-row .r-main { display: flex; flex-direction: column; min-width: 0; }
+.budget-row .r-name b { font-weight: 600; font-variant-numeric: tabular-nums; margin-left: 4px; }
+.budget-note { font-style: italic; }
+.budget-empty { margin: 4px 0 8px; }
+.budget-add { margin-top: 6px; }
+select.input { appearance: auto; }
+.g-detail .budget { padding: 0; margin: 2px 0 0; }
+.g-detail .budget .p-section-title { margin: 6px 0 6px; }
+
 /* ---------- place photos ---------- */
 .pp-photos { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; border-top: 1px solid var(--line-soft); padding-top: 8px; }
 .pp-thumb { position: relative; aspect-ratio: 1; padding: 0; border: 0; border-radius: 8px; overflow: hidden; background: var(--line-soft); }

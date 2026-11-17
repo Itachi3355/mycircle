@@ -190,6 +190,56 @@
     </form>
   </dialog>
 
+  <!-- Trip budget -->
+  <dialog id="budget-dialog" class="dialog dialog-sm" aria-labelledby="budget-title">
+    <form method="dialog" id="budget-form" class="dialog-inner" novalidate>
+      <header class="dialog-head">
+        <h2 id="budget-title">Your trip budget</h2>
+        <button type="button" class="icon-btn" data-close aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12z"/></svg>
+        </button>
+      </header>
+      <div class="dialog-body">
+        <p class="field-note" id="budget-city"></p>
+        <div class="row2">
+          <div class="field">
+            <label for="b-amount" class="field-label">Total spent</label>
+            <input id="b-amount" class="input" type="number" inputmode="decimal" min="1" step="any" placeholder="1200">
+          </div>
+          <div class="field">
+            <label for="b-cur" class="field-label">Currency</label>
+            <select id="b-cur" class="input"></select>
+          </div>
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label for="b-days" class="field-label">Days <span class="opt">(optional)</span></label>
+            <input id="b-days" class="input" type="number" inputmode="numeric" min="1" max="366" step="1" placeholder="5">
+          </div>
+          <div class="field">
+            <label for="b-people" class="field-label">People it covered</label>
+            <input id="b-people" class="input" type="number" inputmode="numeric" min="1" max="50" step="1" value="1">
+          </div>
+        </div>
+        <div class="field">
+          <label for="b-month" class="field-label">When did you go? <span class="opt">(optional)</span></label>
+          <input id="b-month" class="input" type="month">
+        </div>
+        <div class="field">
+          <label for="b-note" class="field-label">What it covered <span class="opt">(optional)</span></label>
+          <input id="b-note" class="input" maxlength="200" placeholder="Flights, 5 nights in a guesthouse, food…">
+        </div>
+        <p class="form-error" id="budget-error" role="alert" hidden></p>
+      </div>
+      <footer class="dialog-foot">
+        <button type="button" class="btn btn-danger-text" id="b-del" hidden>Delete</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-text" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="b-save">Save</button>
+      </footer>
+    </form>
+  </dialog>
+
   <!-- Photo viewer -->
   <dialog id="photo-dialog" class="photo-dialog" aria-label="Photo">
     <img id="photo-img" alt="">

@@ -59,7 +59,7 @@
   // ---------- state ----------
   const S = {
     user: null, profile: null, circles: [], circleId: null,
-    members: new Map(), places: [], loaded: false,
+    members: new Map(), places: [], trips: [], loaded: false,
     mode: "home", city: null, friendId: null, cat: "all", selId: null,
     markerById: new Map(), progUntil: 0, lastRefresh: 0, setupFor: null, plan: null
   };
@@ -164,14 +164,17 @@
   async function loadCircleData() {
     if (DEMO) return; // demo data is already in S
     const cid = S.circleId;
-    const [mem, pl] = await Promise.all([
+    const [mem, pl, tr] = await Promise.all([
       sb.from("circle_members").select("user_id, role").eq("circle_id", cid),
+      sb.from("trips").select("id, user_id, city_key, city, country, amount, currency, days, travellers, visited_month, note, updated_at").eq("circle_id", cid),
       sb.from("places")
         .select("id, name, category, address, city, country, lat, lng, source_ref, created_by, reviews(id, user_id, rating, price, visited_month, body, tip, created_at, updated_at), photos(id, user_id, path, created_at)")
         .eq("circle_id", cid).limit(5000)
     ]);
     if (mem.error) throw mem.error;
     if (pl.error) throw pl.error;
+    if (tr.error) throw tr.error;
+    S.trips = tr.data.map(t => Object.assign(t, { amount: Number(t.amount) }));
     const ids = mem.data.map(m => m.user_id);
     let profs = [];
     if (ids.length) {
@@ -443,6 +446,100 @@
     fillPhotos(el.querySelector("[data-photos]"), p);
     return el;
   }
+  // ---------- trip budgets: what a trip to a city cost, one per person per city, in the currency they paid ----------
+  const CURRENCIES = ["USD", "EUR", "GBP", "INR", "JPY", "AUD", "CAD", "CHF", "CNY", "HKD", "SGD", "AED", "MXN", "BRL", "ZAR", "THB", "IDR", "TRY", "KRW", "NZD", "SEK", "NOK", "DKK", "ISK"];
+  const CURRENCY_KEY = "mycircle.currency";
+  const REGION_CURRENCY = { US: "USD", GB: "GBP", IN: "INR", JP: "JPY", AU: "AUD", CA: "CAD", CH: "CHF", CN: "CNY", HK: "HKD", SG: "SGD", AE: "AED", MX: "MXN", BR: "BRL", ZA: "ZAR", TH: "THB", ID: "IDR", TR: "TRY", KR: "KRW", NZ: "NZD", SE: "SEK", NO: "NOK", DK: "DKK", IS: "ISK" };
+  const EURO = "AT BE CY DE EE ES FI FR GR HR IE IT LT LU LV MT NL PT SI SK".split(" ");
+  function guessCurrency() {
+    try { const r = new Intl.Locale(navigator.language).maximize().region; return REGION_CURRENCY[r] || (EURO.includes(r) ? "EUR" : "USD"); }
+    catch (e) { return "USD"; }
+  }
+  function money(n, cur) {
+    try { return new Intl.NumberFormat(undefined, { style: "currency", currency: cur, maximumFractionDigits: 0 }).format(n); }
+    catch (e) { return Math.round(n) + " " + cur; }
+  }
+  function tripsIn(cityKey) { return cityKey ? S.trips.filter(t => t.city_key === cityKey) : []; }
+  function perDay(t) { return t.days ? t.amount / t.days / (t.travellers || 1) : null; }
+  function budgetHTML(cityKey, canEdit) {
+    if (!cityKey) return "";
+    const list = tripsIn(cityKey).slice().sort((a, b) => isMe(b.user_id) - isMe(a.user_id) || String(b.visited_month || "").localeCompare(String(a.visited_month || "")));
+    if (!list.length && !canEdit) return "";
+    // Typical cost: the median per person per day, in the currency most people used.
+    const byCur = {};
+    list.forEach(t => { const d = perDay(t); if (d) (byCur[t.currency] = byCur[t.currency] || []).push(d); });
+    const cur = Object.keys(byCur).sort((a, b) => byCur[b].length - byCur[a].length)[0];
+    let h = `<div class="p-section budget"><h2 class="p-section-title">Trip budgets</h2>`;
+    if (cur) {
+      const v = byCur[cur].sort((a, b) => a - b), mid = (v[Math.floor((v.length - 1) / 2)] + v[Math.ceil((v.length - 1) / 2)]) / 2;
+      h += `<p class="budget-typical"><b>~${money(mid, cur)}</b> per person per day${v.length > 1 ? ` <span>· typical of ${v.length} trips</span>` : ""}</p>`;
+    }
+    h += list.map(t => `
+      <div class="budget-row">${avatar(t.user_id, "av-sm")}
+        <span class="r-main"><span class="r-name">${esc(nameOf(t.user_id))} <b>${money(t.amount, t.currency)}</b></span>
+          <span class="r-sub">${[t.days ? plural(t.days, "day") : "", t.travellers > 1 ? plural(t.travellers, "person", "people") : "", perDay(t) ? "~" + money(perDay(t), t.currency) + "/person/day" : "", fmtMonth(t.visited_month)].filter(Boolean).join(" · ")}</span>
+          ${t.note ? `<span class="r-sub budget-note">${esc(t.note)}</span>` : ""}</span>
+      </div>`).join("");
+    if (!list.length) h += `<p class="r-sub budget-empty">Nobody has shared what a trip here cost yet.</p>`;
+    if (canEdit) h += `<button type="button" class="btn-outline budget-add" data-act="budget">${list.some(t => isMe(t.user_id)) ? IC.edit + "Edit your trip budget" : IC.add + "Add what your trip cost"}</button>`;
+    return h + `</div>`;
+  }
+  const budgetDlg = $("#budget-dialog"), bDel = $("#b-del");
+  $("#b-cur").innerHTML = CURRENCIES.map(c => `<option value="${c}">${c}</option>`).join("");
+  function myTrip() { return S.city ? tripsIn(S.city.key).find(t => isMe(t.user_id)) : null; }
+  function budgetError(msg) { const e = $("#budget-error"); e.textContent = msg || ""; e.hidden = !msg; }
+  function openBudget() {
+    if (!S.city || !S.city.key) return;
+    const t = myTrip();
+    $("#budget-city").textContent = `What your trip to ${S.city.name} cost in total. Your circle sees it on the city.`;
+    $("#b-amount").value = t ? t.amount : "";
+    $("#b-cur").value = t ? t.currency : store.get(CURRENCY_KEY, guessCurrency());
+    $("#b-days").value = t && t.days ? t.days : "";
+    $("#b-people").value = t ? t.travellers : 1;
+    $("#b-month").value = t && t.visited_month ? t.visited_month : "";
+    $("#b-note").value = t && t.note ? t.note : "";
+    bDel.hidden = !t; bDel.textContent = "Delete"; delete bDel.dataset.sure;
+    budgetError("");
+    budgetDlg.showModal();
+  }
+  $$("[data-close]", budgetDlg).forEach(b => b.addEventListener("click", () => budgetDlg.close()));
+  $("#budget-form").addEventListener("submit", async ev => {
+    ev.preventDefault();
+    const amount = Number($("#b-amount").value), days = $("#b-days").value ? Number($("#b-days").value) : null;
+    const people = Number($("#b-people").value || 1), month = $("#b-month").value || null, currency = $("#b-cur").value;
+    if (!(amount > 0) || amount >= 1e7) { budgetError("Enter the total you spent, for example 1200."); return; }
+    if (days != null && !(Number.isInteger(days) && days >= 1 && days <= 366)) { budgetError("Days should be a whole number from 1 to 366."); return; }
+    if (!(Number.isInteger(people) && people >= 1 && people <= 50)) { budgetError("People should be a whole number from 1 to 50."); return; }
+    const save = $("#b-save");
+    save.disabled = true; budgetError("");
+    try {
+      const { error } = await sb.from("trips").upsert({
+        circle_id: S.circleId, user_id: S.user.id, city_key: S.city.key, city: S.city.name, country: S.city.sub || null,
+        amount: Math.round(amount * 100) / 100, currency, days, travellers: people, visited_month: month, note: $("#b-note").value.trim() || null
+      }, { onConflict: "circle_id,user_id,city_key" });
+      if (error) throw error;
+      store.set(CURRENCY_KEY, currency);
+      budgetDlg.close();
+      await refresh();
+      toast("Trip budget saved");
+    } catch (e) { budgetError(friendly(e, "Couldn't save. Try again.")); }
+    finally { save.disabled = false; }
+  });
+  bDel.addEventListener("click", async () => {
+    if (!bDel.dataset.sure) { bDel.dataset.sure = "1"; bDel.textContent = "Delete your budget?"; return; }
+    const t = myTrip();
+    if (!t) return;
+    bDel.disabled = true;
+    try {
+      const { error } = await sb.from("trips").delete().eq("id", t.id);
+      if (error) throw error;
+      budgetDlg.close();
+      await refresh();
+      toast("Trip budget deleted");
+    } catch (e) { budgetError(friendly(e, "Couldn't delete. Try again.")); }
+    finally { bDel.disabled = false; }
+  });
+
   // ---------- photos: private "photos" bucket, files at <place id>/<random>.jpg, listed in the photos table ----------
   const MAX_THUMBS = 4;
   const photoUrlCache = new Map(); // path -> { url, until }
@@ -510,7 +607,7 @@
   async function showPhoto() {
     const list = PV.place.photos, ph = list[PV.i];
     const when = ph.created_at ? new Date(ph.created_at).toLocaleDateString(undefined, { month: "short", year: "numeric" }) : "";
-    $("#photo-cap").textContent = `${PV.place.name} · ${PV.i + 1} of ${list.length} · ${nameOf(ph.user_id)}${when ? ", " + when : ""}`;
+    $("#photo-cap").textContent = `${PV.place.name} · ${PV.i + 1} of ${list.length} · ${nameOf(ph.user_id)}${when ? ", " + when : ""}${ph.credit ? " · " + ph.credit : ""}`;
     photoDel.hidden = !isMe(ph.user_id);
     photoDel.textContent = "Delete"; delete photoDel.dataset.sure;
     $$("[data-step]", photoDlg).forEach(b => { b.hidden = list.length < 2; });
@@ -624,6 +721,7 @@
         h += chipsHTML(all);
         if (all.length >= 2) h += `<div class="plan-cta"><div><b>Plan a day here</b><span>Morning, afternoon and evening stops from your friends' best picks, with street directions.</span></div>
           <button type="button" class="btn btn-primary" data-act="plan">Plan my day</button></div>`;
+        h += budgetHTML(S.city.key, true);
         h += `<div class="p-section"><h2 class="p-section-title">Friends who've been here</h2>`;
         h += friends.map(f => {
           const a = avg(f.ratings);
@@ -817,6 +915,7 @@
       else if (a === "plan-close") closePlan();
       else if (a === "plan-retry") loadRoute();
       else if (a === "globe") openGlobeView(act.dataset.uid || null);
+      else if (a === "budget") openBudget();
       return;
     }
     const ud = t.closest("[data-undone]");
@@ -1270,7 +1369,7 @@
         esc, plural, avatar, starsHTML, nameOf, colorFor, reduced: reduceMotion(),
         logo: IC.logo, mapIcon: IC.pin,
         closeIcon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12z"/></svg>',
-        photoUrls, openPhotos,
+        photoUrls, openPhotos, budgetHTML: key => budgetHTML(key, false),
         onOpenCity: openCityFromGroup
       });
     } catch (e) {
@@ -1700,7 +1799,7 @@
   if (DEMO) {
     S.user = DEMO.user; S.profile = DEMO.profile; S.circles = DEMO.circles; S.circleId = DEMO.circles[0].id;
     S.members = new Map(DEMO.members.map(m => [m.id, m]));
-    S.places = DEMO.places.map(cleanPlace); S.loaded = true;
+    S.places = DEMO.places.map(cleanPlace); S.trips = DEMO.trips || []; S.loaded = true;
     applyCountryTheme();
     hideGate(); renderMe(); goHome({ fly: false }); fitAll(); loadDone();
     if (new URLSearchParams(location.search).has("pickcountry")) { S.user.user_metadata = {}; applyCountryTheme(); showCountryStep(false); }

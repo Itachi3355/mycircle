@@ -37,13 +37,6 @@ function homePoint(country) {
   for (let i = 0; i < ring.length; i += 2) { w = Math.min(w, ring[i]); e = Math.max(e, ring[i]); s = Math.min(s, ring[i + 1]); n = Math.max(n, ring[i + 1]); }
   return [(s + n) / 2, (w + e) / 2];
 }
-function dotTexture() {
-  const c = document.createElement("canvas");
-  c.width = c.height = 32;
-  const g = c.getContext("2d");
-  g.beginPath(); g.arc(16, 16, 14, 0, Math.PI * 2); g.fillStyle = "#fff"; g.fill();
-  return new THREE.CanvasTexture(c);
-}
 // Great-circle arc between two points, lifted off the surface in proportion to its length.
 function arcPoints(a, b) {
   const va = toVec(a[0], a[1]), vb = toVec(b[0], b[1]);
@@ -87,8 +80,14 @@ export function openGlobe(ctx) {
   for (let i = 0; i < land.length; i += 2) toVec(land[i], land[i + 1], 1.002).toArray(pos, i / 2 * 3);
   const landGeo = new THREE.BufferGeometry();
   landGeo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-  const dotTex = dotTexture();
-  globe.add(new THREE.Points(landGeo, new THREE.PointsMaterial({ color: C.accent, size: 0.042, map: dotTex, alphaTest: 0.5, transparent: true, opacity: 0.8 })));
+  // Round dots that fade out as they turn towards the horizon, so none poke out past the globe's edge.
+  const landMat = new THREE.ShaderMaterial({
+    uniforms: { c: { value: C.accent }, size: { value: 0.042 }, scale: { value: 400 } },
+    vertexShader: "uniform float size; uniform float scale; varying float f; void main(){ vec4 mv = modelViewMatrix * vec4(position, 1.0); f = dot(normalize(normalMatrix * position), normalize(-mv.xyz)); gl_PointSize = size * scale / -mv.z; gl_Position = projectionMatrix * mv; }",
+    fragmentShader: "uniform vec3 c; varying float f; void main(){ if (f < 0.0 || length(gl_PointCoord - 0.5) > 0.5) discard; gl_FragColor = vec4(c, 0.8 * smoothstep(0.0, 0.3, f));\n#include <colorspace_fragment>\n}",
+    transparent: true, depthWrite: false
+  });
+  globe.add(new THREE.Points(landGeo, landMat));
 
   const atmo = new THREE.Mesh(new THREE.SphereGeometry(1.09, 48, 48), new THREE.ShaderMaterial({
     uniforms: { c: { value: C.glow } },
@@ -263,7 +262,7 @@ export function openGlobe(ctx) {
     detail.classList.remove("has-cover");
     const cover = coverOf(g), box = detail.querySelector(".g-cover");
     if (!cover || !ctx.photoUrls) return;
-    box.querySelector("span").textContent = `${cover.p.name} · ${nameOf(cover.ph.user_id)}`;
+    box.querySelector("span").textContent = `${cover.p.name} · ${cover.ph.credit || nameOf(cover.ph.user_id)}`;
     box.setAttribute("aria-label", `Open photos of ${cover.p.name}`);
     box.addEventListener("click", () => ctx.openPhotos(cover.p, cover.i));
     ctx.photoUrls([cover.ph.path]).then(([url]) => {
@@ -290,6 +289,7 @@ export function openGlobe(ctx) {
         <li><i class="cat-dot cat-${esc(x.p.category)}"></i><span>${esc(x.p.name)}</span>${starsHTML(Math.round(avg(x.rs.map(r => r.rating))))}</li>`).join("")}
       </ul>
       ${rows.length > 5 ? `<p class="g-meta">and ${plural(rows.length - 5, "more place")}</p>` : ""}
+      ${ctx.budgetHTML ? ctx.budgetHTML(g.cityKey) : ""}
       ${tip ? `<p class="g-tip"><b>Tip from ${esc(nameOf(tip.user_id))}:</b> ${esc(tip.tip)}</p>` : ""}
       <button type="button" class="btn btn-primary g-open" data-g="open">Open ${esc(g.name)} on the map</button>`;
   }
@@ -320,7 +320,6 @@ export function openGlobe(ctx) {
     ro.disconnect();
     clearArcs();
     scene.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
-    dotTex.dispose();
     renderer.dispose();
     el.remove();
     if (back && back.focus) back.focus();
@@ -384,6 +383,7 @@ export function openGlobe(ctx) {
   function size() {
     const w = el.clientWidth, h = el.clientHeight;
     renderer.setSize(w, h, false);
+    landMat.uniforms.scale.value = h * renderer.getPixelRatio() / 2;
     camera.aspect = w / h;
     const wide = w > 900, phone = w <= 720;
     // Leave room for the panels: shift the globe right on wide screens; on phones, down a little,
