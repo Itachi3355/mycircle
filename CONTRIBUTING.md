@@ -7,12 +7,13 @@ Thanks for helping. Developers and designers are both welcome.
 No build step, no install. From this folder:
 
 ```
-py -m http.server 3000
+python -m http.server 3000
 ```
 
 Open **http://localhost:3000/?demo**. Demo mode fills the app with sample friends, places and photos, with no sign-in and no database. Saving is disabled there.
 
 To work on sign-in or saving, ask in an issue for access to a test Supabase project.
+Run the circle data tests with `node --test tests/circle-data.test.mjs`.
 
 ## Where things are
 

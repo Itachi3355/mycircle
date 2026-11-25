@@ -1,8 +1,11 @@
 /* MyCircle: places your close friends have actually been, on one map. */
+import { fetchCircleData } from "./circle-data.mjs";
+
 (function () {
   "use strict";
 
   const CFG = window.MYCIRCLE_CONFIG;
+  const DEMO = new URLSearchParams(location.search).has("demo") && window.MYCIRCLE_DEMO;
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 
@@ -14,16 +17,17 @@
     set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* private mode */ } },
     del(k) { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } }
   };
-  (function captureJoinCode() {
+  if (!DEMO) {
     const url = new URL(location.href);
     const code = url.searchParams.get("join");
-    if (!code) return;
-    store.set(JOIN_KEY, code.trim().slice(0, 64));
-    url.searchParams.delete("join");
-    history.replaceState(null, "", url.pathname + url.search + url.hash);
-  })();
+    if (code) {
+      store.set(JOIN_KEY, code.trim().slice(0, 64));
+      url.searchParams.delete("join");
+      history.replaceState(null, "", url.pathname + url.search + url.hash);
+    }
+  }
 
-  const sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, {
+  const sb = DEMO ? null : window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
   });
 
@@ -54,15 +58,14 @@
     logo: '<svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="5"/><g opacity=".8"><circle cx="16" cy="4.5" r="3"/><circle cx="26" cy="10.3" r="3"/><circle cx="26" cy="21.7" r="3"/><circle cx="16" cy="27.5" r="3"/><circle cx="6" cy="21.7" r="3"/><circle cx="6" cy="10.3" r="3"/></g></svg>'
   };
 
-  const DEMO = new URLSearchParams(location.search).has("demo") && window.MYCIRCLE_DEMO;
-
   // ---------- state ----------
   const S = {
     user: null, profile: null, circles: [], circleId: null,
     members: new Map(), places: [], trips: [], loaded: false,
     mode: "home", city: null, friendId: null, cat: "all", selId: null,
-    markerById: new Map(), progUntil: 0, lastRefresh: 0, setupFor: null, plan: null
+    markerById: new Map(), progUntil: 0, lastRefresh: 0, plan: null
   };
+  let sessionVersion = 0;
 
   // ---------- small helpers ----------
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
@@ -154,37 +157,30 @@
     };
   }
   async function loadCircles() {
+    const session = sessionVersion;
     const { data, error } = await sb.from("circle_members").select("role, circles(id, name, invite_code, owner_id)").eq("user_id", S.user.id);
+    if (session !== sessionVersion) return false;
     if (error) throw error;
     S.circles = (data || []).filter(r => r.circles).map(r => Object.assign({}, r.circles, { role: r.role }))
       .sort((a, b) => a.name.localeCompare(b.name));
     const saved = store.get(CIRCLE_KEY, null);
     if (!S.circles.some(c => c.id === S.circleId)) S.circleId = S.circles.some(c => c.id === saved) ? saved : (S.circles[0] && S.circles[0].id) || null;
+    return true;
   }
-  async function loadCircleData() {
-    if (DEMO) return; // demo data is already in S
-    const cid = S.circleId;
-    const [mem, pl, tr] = await Promise.all([
-      sb.from("circle_members").select("user_id, role").eq("circle_id", cid),
-      sb.from("trips").select("id, user_id, city_key, city, country, amount, currency, days, travellers, visited_month, note, updated_at").eq("circle_id", cid),
-      sb.from("places")
-        .select("id, name, category, address, city, country, lat, lng, source_ref, created_by, reviews(id, user_id, rating, price, visited_month, body, tip, created_at, updated_at), photos(id, user_id, path, created_at)")
-        .eq("circle_id", cid).limit(5000)
-    ]);
-    if (mem.error) throw mem.error;
-    if (pl.error) throw pl.error;
-    if (tr.error) throw tr.error;
-    S.trips = tr.data.map(t => Object.assign(t, { amount: Number(t.amount) }));
-    const ids = mem.data.map(m => m.user_id);
-    let profs = [];
-    if (ids.length) {
-      const pr = await sb.from("profiles").select("id, display_name").in("id", ids);
-      if (pr.error) throw pr.error;
-      profs = pr.data;
-    }
-    S.members = new Map(mem.data.map(m => [m.user_id, { id: m.user_id, role: m.role, name: "" }]));
-    for (const p of profs) { const m = S.members.get(p.id); if (m) m.name = p.display_name; }
-    S.places = pl.data.map(cleanPlace).filter(p => p.reviews.length && isFinite(p.lat) && isFinite(p.lng));
+  async function loadCircleData(cid) {
+    const session = sessionVersion;
+    const data = await fetchCircleData(sb, cid);
+    if (session !== sessionVersion) return null;
+    return {
+      ...data,
+      places: data.places.map(cleanPlace).filter(p => p.reviews.length && Number.isFinite(p.lat) && Number.isFinite(p.lng))
+    };
+  }
+  function applyCircleData(cid, data) {
+    S.circleId = cid;
+    S.members = data.members;
+    S.trips = data.trips;
+    S.places = data.places;
     S.loaded = true;
     S.lastRefresh = Date.now();
   }
@@ -436,13 +432,15 @@
       <div class="pp-actions">
         <a class="btn-outline" href="${esc(mapsHref(p))}" target="_blank" rel="noopener">${IC.ext}Google Maps</a>
         <button type="button" class="btn-outline" data-mine>${mine ? IC.edit + "Edit your review" : IC.add + "I've been here"}</button>
-        <button type="button" class="btn-outline" data-addphoto>${IC.camera}Add photos</button>
-        <input type="file" accept="image/*" multiple class="sr" tabindex="-1" aria-hidden="true" data-photofile>
+        ${DEMO ? "" : `<button type="button" class="btn-outline" data-addphoto>${IC.camera}Add photos</button>
+        <input type="file" accept="image/*" multiple class="sr" tabindex="-1" aria-hidden="true" data-photofile>`}
       </div>`;
     el.querySelector("[data-mine]").addEventListener("click", () => { map.closePopup(); openAdd({ place: p, review: mine || null }); });
     const file = el.querySelector("[data-photofile]");
-    el.querySelector("[data-addphoto]").addEventListener("click", () => file.click());
-    file.addEventListener("change", () => { const fs = [...file.files]; file.value = ""; addPhotos(p, fs); });
+    if (file) {
+      el.querySelector("[data-addphoto]").addEventListener("click", () => file.click());
+      file.addEventListener("change", () => { const fs = [...file.files]; file.value = ""; addPhotos(p, fs); });
+    }
     fillPhotos(el.querySelector("[data-photos]"), p);
     return el;
   }
@@ -463,6 +461,7 @@
   function perDay(t) { return t.days ? t.amount / t.days / (t.travellers || 1) : null; }
   function budgetHTML(cityKey, canEdit) {
     if (!cityKey) return "";
+    canEdit = canEdit && !DEMO;
     const list = tripsIn(cityKey).slice().sort((a, b) => isMe(b.user_id) - isMe(a.user_id) || String(b.visited_month || "").localeCompare(String(a.visited_month || "")));
     if (!list.length && !canEdit) return "";
     // Typical cost: the median per person per day, in the currency most people used.
@@ -608,13 +607,20 @@
     const list = PV.place.photos, ph = list[PV.i];
     const when = ph.created_at ? new Date(ph.created_at).toLocaleDateString(undefined, { month: "short", year: "numeric" }) : "";
     $("#photo-cap").textContent = `${PV.place.name} · ${PV.i + 1} of ${list.length} · ${nameOf(ph.user_id)}${when ? ", " + when : ""}${ph.credit ? " · " + ph.credit : ""}`;
-    photoDel.hidden = !isMe(ph.user_id);
+    photoDel.hidden = DEMO || !isMe(ph.user_id);
     photoDel.textContent = "Delete"; delete photoDel.dataset.sure;
     $$("[data-step]", photoDlg).forEach(b => { b.hidden = list.length < 2; });
     photoImg.alt = "Photo of " + PV.place.name;
     photoImg.removeAttribute("src");
-    try { photoImg.src = (await photoUrls([ph.path]))[0]; }
-    catch (e) { toast(friendly(e, "Couldn't load the photo.")); }
+    const view = PV, index = PV.i;
+    try {
+      const [url] = await photoUrls([ph.path]);
+      if (PV !== view || PV.i !== index) return;
+      if (!url) throw new Error("Photo unavailable");
+      photoImg.src = url;
+    } catch (e) {
+      if (PV === view && PV.i === index) toast(friendly(e, "Couldn't load the photo."));
+    }
   }
   function openPhotos(p, i) { PV = { place: p, i }; showPhoto(); if (!photoDlg.open) photoDlg.showModal(); }
   function stepPhoto(d) { if (!PV) return; const n = PV.place.photos.length; PV.i = (PV.i + d + n) % n; showPhoto(); }
@@ -628,6 +634,11 @@
     if (ev.key === "ArrowRight") stepPhoto(1);
   });
   $("#photo-close").addEventListener("click", () => photoDlg.close());
+  photoDlg.addEventListener("close", () => {
+    if (photoDlg.open) return;
+    PV = null;
+    photoImg.removeAttribute("src");
+  });
   photoDel.addEventListener("click", async () => {
     if (!photoDel.dataset.sure) { photoDel.dataset.sure = "1"; photoDel.textContent = "Delete this photo?"; return; }
     const placeId = PV.place.id, ph = PV.place.photos[PV.i];
@@ -835,22 +846,22 @@
     const plan = S.plan;
     if (!plan) return;
     if (plan.ctl) plan.ctl.abort();
-    plan.ctl = new AbortController();
+    const ctl = plan.ctl = new AbortController();
     plan.status = "loading"; plan.route = null;
     render();
     const coords = plan.stops.map(s => s.place.lng + "," + s.place.lat).join(";");
     const url = `${CFG.routeUrl || "https://routing.openstreetmap.de"}/routed-${plan.mode === "car" ? "car" : "foot"}/route/v1/driving/${coords}?overview=full&geometries=geojson`;
     try {
-      const res = await fetch(url, { signal: plan.ctl.signal });
+      const res = await fetch(url, { signal: ctl.signal });
       if (!res.ok) throw new Error("route " + res.status);
       const data = await res.json();
       const rt = data.routes && data.routes[0];
       if (!rt) throw new Error("no route");
-      if (S.plan !== plan) return;
+      if (S.plan !== plan || ctl.signal.aborted) return;
       plan.route = { coords: rt.geometry.coordinates.map(([x, y]) => [y, x]), legs: rt.legs.map(l => ({ m: l.distance, s: l.duration })), m: rt.distance, s: rt.duration };
       plan.status = "ok";
     } catch (e) {
-      if (e.name === "AbortError" || S.plan !== plan) return;
+      if (ctl.signal.aborted || S.plan !== plan) return;
       plan.status = "fail";
     }
     render();
@@ -985,6 +996,7 @@
       const res = await fetch(url, { signal: ctl.signal });
       if (!res.ok) throw new Error("search " + res.status);
       const data = await res.json();
+      if (ctl.signal.aborted) return;
       const feats = (data.features || []).filter(f => f.geometry && f.properties && f.properties.name);
       const areas = feats.filter(f => PLACE_TYPES[f.properties.type] || f.properties.osm_key === "place" || f.properties.osm_key === "boundary")
         .sort((a, b) => (PLACE_TYPES[a.properties.type] || 9) - (PLACE_TYPES[b.properties.type] || 9));
@@ -1135,7 +1147,7 @@
     $("#add-step-details").hidden = false;
     $("#add-foot").hidden = false;
     $("#add-back").hidden = existing;
-    $("#del-review").hidden = !A.review;
+    $("#del-review").hidden = DEMO || !A.review;
     $("#manual-name-field").hidden = !A.manual;
     $("#f-cat").closest("fieldset").hidden = existing;
     const cat = p.category || "other";
@@ -1240,7 +1252,10 @@
   $("#add-form").addEventListener("submit", async ev => {
     ev.preventDefault();
     if ($("#add-step-details").hidden) return;
-    const p = A.place;
+    if (DEMO) { addError("Demo mode uses sample data. Open the main site and sign in to save your own places."); return; }
+    const p = A.place, cid = S.circleId, session = sessionVersion;
+    const save = $("#add-save");
+    if (!p || save.disabled) return;
     const existing = !!p.id;
     const rating = Number(radio("rating")) || 0;
     const category = existing ? p.category : radio("cat");
@@ -1250,40 +1265,43 @@
     if (!category) missing.push("the type");
     if (!rating) missing.push("your rating");
     if (missing.length) { addError("Add " + missing.join(" and ") + " to save."); return; }
-    const save = $("#add-save");
+    const wasEdit = !!A.review;
+    const review = {
+      user_id: S.user.id, rating, price: Number(radio("price")) || null,
+      visited_month: /^\d{4}-\d{2}$/.test($("#f-month").value) ? $("#f-month").value : null,
+      body: $("#f-body").value.trim() || null,
+      tip: $("#f-tip").value.trim().replace(/\s+/g, " ") || null
+    };
     save.disabled = true; save.textContent = "Saving…";
     addError("");
     try {
-      let placeId = p.id || null;
+      let placeId = p.id || p.savedId || null;
       if (!placeId && p.source_ref) {
-        const { data, error } = await sb.from("places").select("id").eq("circle_id", S.circleId).eq("source_ref", p.source_ref).maybeSingle();
+        const { data, error } = await sb.from("places").select("id").eq("circle_id", cid).eq("source_ref", p.source_ref).maybeSingle();
+        if (session !== sessionVersion) return;
         if (error) throw error;
         if (data) placeId = data.id;
       }
       if (!placeId) {
         const row = {
-          circle_id: S.circleId, name: name.slice(0, 120), category,
+          circle_id: cid, name: name.slice(0, 120), category,
           address: p.address || null, city: p.city || null, country: p.country || null,
           lat: Number(p.lat.toFixed(6)), lng: Number(p.lng.toFixed(6)), source_ref: p.source_ref || null
         };
         const { data, error } = await sb.from("places").insert(row).select("id").single();
         if (error && error.code === "23505" && p.source_ref) {
-          const again = await sb.from("places").select("id").eq("circle_id", S.circleId).eq("source_ref", p.source_ref).single();
+          const again = await sb.from("places").select("id").eq("circle_id", cid).eq("source_ref", p.source_ref).single();
           if (again.error) throw again.error;
           placeId = again.data.id;
         } else if (error) throw error;
         else placeId = data.id;
       }
-      const price = Number(radio("price")) || null;
-      const month = /^\d{4}-\d{2}$/.test($("#f-month").value) ? $("#f-month").value : null;
-      const review = {
-        place_id: placeId, user_id: S.user.id, rating, price, visited_month: month,
-        body: $("#f-body").value.trim() || null, tip: $("#f-tip").value.trim().replace(/\s+/g, " ") || null
-      };
-      const { error } = await sb.from("reviews").upsert(review, { onConflict: "place_id,user_id" });
+      if (session !== sessionVersion) return;
+      p.savedId = placeId;
+      const { error } = await sb.from("reviews").upsert({ ...review, place_id: placeId }, { onConflict: "place_id,user_id" });
       if (error) throw error;
-      const wasEdit = !!A.review;
-      addDlg.close();
+      if (session !== sessionVersion || cid !== S.circleId) return;
+      if (A.place === p) addDlg.close();
       if (S.mode === "friend" && !isMe(S.friendId)) { S.mode = "city"; S.friendId = null; }
       await refresh();
       const saved = S.places.find(x => x.id === placeId);
@@ -1292,11 +1310,14 @@
           const g = cityGroups().find(g2 => g2.places.some(x => x.id === placeId));
           if (g) openCityFromGroup(g);
         } else render();
-        setTimeout(() => { selectPlace(placeId, { fly: true }); pulsePlace(placeId); }, reduceMotion() ? 0 : 950);
+        setTimeout(() => {
+          if (session !== sessionVersion || cid !== S.circleId) return;
+          selectPlace(placeId, { fly: true }); pulsePlace(placeId);
+        }, reduceMotion() ? 0 : 950);
       }
       toast(wasEdit ? "Review updated" : "Saved. Your friends can see it now.");
     } catch (e) {
-      addError(friendly(e, "Couldn't save. Try again."));
+      if (session === sessionVersion && A.place === p) addError(friendly(e, "Couldn't save. Try again."));
     } finally {
       save.disabled = false; save.textContent = "Save";
     }
@@ -1306,6 +1327,7 @@
   const inviteDlg = $("#invite-dialog");
   function inviteUrl(code) { return location.origin + location.pathname + "?join=" + encodeURIComponent(code); }
   function openInvite() {
+    if (DEMO) { toast("Sign in to invite friends to your own circle."); return; }
     const c = currentCircle();
     if (!c) return;
     $("#invite-circle").textContent = c.name;
@@ -1385,6 +1407,12 @@
     meBtn.style.background = colorFor(S.user.id);
     meBtn.textContent = initials(name || S.user.email);
     meBtn.title = name;
+    if (DEMO) {
+      meMenu.innerHTML = `<div class="menu-head"><b>Demo mode</b><span>Explore MyCircle with sample data</span></div>
+        <button type="button" role="menuitem" data-m="country">Change demo country</button>
+        <button type="button" role="menuitem" data-m="leave-demo">Go to sign-in</button>`;
+      return;
+    }
     meMenu.innerHTML = `
       <div class="menu-head"><b>${esc(name)}</b><span>${esc(S.user.email || "")}</span></div>
       ${S.circles.length > 1 ? `<p class="menu-label">Your circles</p>` + S.circles.map(c =>
@@ -1403,11 +1431,22 @@
     const b = ev.target.closest("button");
     if (!b) return;
     meMenu.hidden = true;
-    if (b.dataset.circle) { await switchCircle(b.dataset.circle); return; }
+    if (b.dataset.m === "leave-demo") {
+      location.assign(location.pathname);
+      return;
+    }
+    if (b.dataset.circle) {
+      try { await switchCircle(b.dataset.circle); }
+      catch (e) { toast(friendly(e, "Couldn't switch circles. Try again.")); }
+      return;
+    }
     const m = b.dataset.m;
     if (m === "invite") openInvite();
     if (m === "country") showCountryStep(true);
-    if (m === "out") { await sb.auth.signOut(); }
+    if (m === "out") {
+      const { error } = await sb.auth.signOut();
+      if (error) toast(friendly(error, "Couldn't sign out. Try again."));
+    }
     if (m === "name") askText({
       title: "Change your name", label: "Name your friends see", value: S.profile.display_name, max: 40,
       onSave: async v => {
@@ -1421,27 +1460,48 @@
       onSave: async v => {
         const { data, error } = await sb.rpc("create_circle", { circle_name: v });
         if (error) throw error;
-        await loadCircles(); await switchCircle(data); openInvite();
+        if (await loadCircles() && await switchCircle(data)) openInvite();
       }
     });
   });
+  let switchingCircle = false;
   async function switchCircle(id) {
-    S.circleId = id; store.set(CIRCLE_KEY, id);
-    S.loaded = false;
-    await loadCircleData();
-    renderMe();
-    goHome();
+    if (switchingCircle || id === S.circleId) return false;
+    switchingCircle = true;
+    meBtn.disabled = true;
+    try {
+      const data = await loadCircleData(id);
+      if (!data) return false;
+      for (const dialog of [addDlg, budgetDlg, photoDlg, inviteDlg]) dialog.close();
+      stopPicking();
+      map.off("click", onPick);
+      refreshRequest++;
+      applyCircleData(id, data);
+      store.set(CIRCLE_KEY, id);
+      renderMe();
+      goHome();
+      return true;
+    } finally {
+      switchingCircle = false;
+      meBtn.disabled = false;
+    }
   }
 
   $("#add-btn").addEventListener("click", () => openAdd({}));
 
+  let refreshRequest = 0;
   async function refresh() {
+    if (DEMO || !S.loaded) return;
+    const cid = S.circleId, session = sessionVersion, request = ++refreshRequest;
+    const isCurrent = () => cid === S.circleId && session === sessionVersion && request === refreshRequest;
     try {
-      await loadCircleData();
+      const data = await loadCircleData(cid);
+      if (!data || !isCurrent()) return;
+      applyCircleData(cid, data);
       if (S.friendId && !S.members.has(S.friendId) && !S.places.some(p => p.reviews.some(r => r.user_id === S.friendId))) { S.mode = "city"; S.friendId = null; }
       if (S.selId && !S.places.some(p => p.id === S.selId)) S.selId = null;
       render();
-    } catch (e) { toast(friendly(e, "Couldn't refresh. Try again in a moment.")); }
+    } catch (e) { if (isCurrent()) toast(friendly(e, "Couldn't refresh. Try again in a moment.")); }
   }
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && S.loaded && Date.now() - S.lastRefresh > 30000 && !addDlg.open) refresh();
@@ -1621,7 +1681,9 @@
 
   // ---------- sign-in, name and circle setup ----------
   const gate = $("#gate"), gateCard = $("#gate-card");
+  let stopLanding = null;
   function showGate(html, landing) {
+    if (stopLanding) { stopLanding(); stopLanding = null; }
     gate.hidden = false;
     gate.classList.toggle("landing", !!landing);
     $("#panel").hidden = true; $("#top-right").hidden = true; $("#area-btn").hidden = true;
@@ -1643,51 +1705,92 @@
     return "You've been invited to a circle. Sign in to join.";
   }
 
-  // The signed-out screen is the built landing page (landing/dist). It runs in an iframe, so the
-  // email goes up as a message, we call Supabase here, and the result goes back down.
-  let landingListener = null;
-  async function showSignIn() {
-    // The 3D landing page isn't in the public repo; without it, use a plain sign-in form.
-    const hasLanding = await fetch("landing/dist/index.html", { method: "HEAD", cache: "no-store" }).then(r => r.ok, () => false);
-    if (!hasLanding) { showPlainSignIn(); return; }
-    showGate(`<iframe class="landing-frame" src="landing/dist/index.html" title="MyCircle: sign in"></iframe>`, true);
-    const frame = gateCard.querySelector("iframe");
-    const note = await inviteNote();
-    if (landingListener) window.removeEventListener("message", landingListener);
-    landingListener = async ev => {
-      if (ev.origin !== location.origin || ev.source !== frame.contentWindow) return;
-      const msg = ev.data || {};
-      const reply = m => frame.contentWindow.postMessage(m, location.origin);
-      if (msg.type === "mycircle:ready") reply({ type: "mycircle:invite", note });
-      if (msg.type === "mycircle:signin") {
-        const email = String(msg.email || "").trim();
-        if (!/^\S+@\S+\.\S+$/.test(email)) { reply({ type: "mycircle:signin-result", error: "Enter your email address." }); return; }
-        const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname } });
-        reply({ type: "mycircle:signin-result", error: error ? friendly(error, "Couldn't send the email. Try again.") : undefined });
-      }
-    };
-    window.addEventListener("message", landingListener);
+  async function sendSignIn(email) {
+    if (!/^\S+@\S+\.\S+$/.test(email)) return "Enter your email address.";
+    try {
+      const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname } });
+      return error ? friendly(error, "Couldn't send the email. Try again.") : undefined;
+    } catch (e) { return friendly(e, "Couldn't send the email. Try again."); }
   }
 
-  async function showPlainSignIn() {
-    const note = await inviteNote();
+  const authLinkError = (() => {
+    if (DEMO) return "";
+    const url = new URL(location.href);
+    const fragment = new URLSearchParams(url.hash.slice(1));
+    const code = fragment.get("error_code") || url.searchParams.get("error_code");
+    if (!code) return "";
+    for (const key of ["error", "error_code", "error_description"]) {
+      url.searchParams.delete(key);
+      fragment.delete(key);
+    }
+    url.hash = fragment.toString();
+    history.replaceState(null, "", url.pathname + url.search + url.hash);
+    return code === "otp_expired" ? "This sign-in link expired or has already been used. Request a new one below." : "This sign-in link couldn't be opened. Request a new one below.";
+  })();
+
+  // The signed-out screen is the built landing page (landing/dist). It runs in an iframe, so the
+  // email goes up as a message, we call Supabase here, and the result goes back down.
+  async function showSignIn() {
+    const session = sessionVersion;
+    const note = inviteNote();
+    if (authLinkError) { showPlainSignIn(note, authLinkError); return; }
+    showGate('<p class="muted">Loading MyCircle…</p>');
+    const landingUrl = "landing/dist/index.html";
+    const probe = new AbortController();
+    const probeTimer = setTimeout(() => probe.abort(), 3000);
+    const hasLanding = await fetch(landingUrl, { method: "HEAD", signal: probe.signal }).then(r => r.ok, () => false);
+    clearTimeout(probeTimer);
+    if (session !== sessionVersion) return;
+    if (!hasLanding) { showPlainSignIn(note); return; }
+    showGate(`<iframe class="landing-frame" title="MyCircle: sign in"></iframe>`, true);
+    const frame = gateCard.querySelector("iframe");
+    const fallback = setTimeout(() => showPlainSignIn(note), 6000);
+    let sending = false;
+    const listener = async ev => {
+      if (ev.origin !== location.origin || ev.source !== frame.contentWindow) return;
+      const msg = ev.data || {};
+      const reply = m => { if (frame.contentWindow) frame.contentWindow.postMessage(m, location.origin); };
+      if (msg.type === "mycircle:ready") {
+        clearTimeout(fallback);
+        reply({ type: "mycircle:invite", note: await note });
+      }
+      if (msg.type === "mycircle:signin" && !sending) {
+        sending = true;
+        const error = await sendSignIn(String(msg.email || "").trim());
+        sending = false;
+        reply({ type: "mycircle:signin-result", error });
+      }
+    };
+    window.addEventListener("message", listener);
+    stopLanding = () => { clearTimeout(fallback); window.removeEventListener("message", listener); };
+    frame.src = landingUrl;
+  }
+
+  function showPlainSignIn(invitation, linkError) {
     showGate(`<h1>Places your friends have actually been</h1>
-      ${note ? `<p>${esc(note)}</p>` : `<p>Sign in with your email. We'll send you a link, no password needed.</p>`}
+      <p id="g-invite-note" hidden></p>
+      <p>Sign in with your email. We'll send you a link, no password needed.</p>
       <form id="g-signin" novalidate>
         <label class="field-label" for="g-email">Email</label>
         <input id="g-email" class="input" type="email" autocomplete="email" inputmode="email" placeholder="you@example.com" required>
         <p class="form-error" role="alert" hidden></p>
         <button class="btn btn-primary" type="submit">Email me a sign-in link</button>
       </form>`);
+    if (linkError) gateError(linkError);
+    const note = $("#g-invite-note");
+    invitation.then(message => { if (message) { note.textContent = message; note.hidden = false; } });
     $("#g-signin").addEventListener("submit", async ev => {
       ev.preventDefault();
       const email = $("#g-email").value.trim(), btn = ev.target.querySelector("button");
-      if (!/^\S+@\S+\.\S+$/.test(email)) { gateError("Enter your email address."); return; }
+      if (btn.disabled) return;
       btn.disabled = true;
-      const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname } });
+      const error = await sendSignIn(email);
+      if (!btn.isConnected) return;
       btn.disabled = false;
-      if (error) { gateError(friendly(error, "Couldn't send the email. Try again.")); return; }
-      showGate(`<h1>Check your email</h1><p>We sent a sign-in link to <b>${esc(email)}</b>. Open it on this device.</p>`);
+      if (error) { gateError(error); return; }
+      showGate(`<h1>Check your email</h1><p>We sent a sign-in link to <b>${esc(email)}</b>. Open it on this device.</p>
+        <button class="btn btn-text" type="button" id="g-email-back">Use a different email or resend</button>`);
+      $("#g-email-back").addEventListener("click", () => { showPlainSignIn(invitation); $("#g-email").value = email; });
     });
   }
 
@@ -1750,45 +1853,54 @@
   }
 
   async function afterProfile() {
+    const session = sessionVersion;
     applyCountryTheme();
     if (!myCountry()) { showCountryStep(false); return; }
     showGate(`<p class="muted">Loading your circle…</p>`);
     try {
       const code = store.get(JOIN_KEY, null);
       if (code) {
-        store.del(JOIN_KEY);
         const { data, error } = await sb.rpc("join_circle", { code });
-        if (error) toast(friendly(error));
+        if (session !== sessionVersion) return;
+        if (error && !/invite link is not valid/i.test(error.message || "")) throw error;
+        store.del(JOIN_KEY);
+        if (error) toast(friendly(error, "Couldn't join the circle."));
         else { S.circleId = data; store.set(CIRCLE_KEY, data); toast("You joined the circle"); }
       }
-      await loadCircles();
+      if (!await loadCircles()) return;
       if (!S.circles.length) { showCircleStep(); return; }
-      store.set(CIRCLE_KEY, S.circleId);
-      await loadCircleData();
+      const cid = S.circleId;
+      const data = await loadCircleData(cid);
+      if (!data) return;
+      applyCircleData(cid, data);
+      store.set(CIRCLE_KEY, cid);
       hideGate();
       renderMe();
       goHome({ fly: false });
       fitAll();
       loadDone();
     } catch (e) {
+      if (session !== sessionVersion) return;
       showGate(`<h1>Couldn't load MyCircle</h1><p>${esc(friendly(e))}</p><button type="button" class="btn btn-primary" id="g-retry">Try again</button>`);
       $("#g-retry").addEventListener("click", afterProfile);
     }
   }
 
-  async function onSession(session) {
+  async function onSession(session, retry = false) {
     const uid = session && session.user ? session.user.id : null;
-    if (uid && S.setupFor === uid) { S.user = session.user; return; } // token refresh
-    S.setupFor = uid;
+    if (!retry && sessionVersion && uid === (S.user?.id || null)) { S.user = session?.user || null; return; }
+    const version = ++sessionVersion;
+    if (S.user && S.user.id !== uid) { location.reload(); return; }
     S.user = session ? session.user : null;
     S.profile = null; S.loaded = false; S.places = []; S.circles = [];
     layer.clearLayers();
     if (!S.user) { showSignIn(); return; }
     showGate(`<p class="muted">Signing you in…</p>`);
     const { data, error } = await sb.from("profiles").select("id, display_name").eq("id", S.user.id).maybeSingle();
+    if (version !== sessionVersion) return;
     if (error) {
       showGate(`<h1>Couldn't load MyCircle</h1><p>${esc(friendly(error))}</p><button type="button" class="btn btn-primary" id="g-retry">Try again</button>`);
-      $("#g-retry").addEventListener("click", () => { S.setupFor = null; onSession(session); });
+      $("#g-retry").addEventListener("click", () => onSession(session, true));
       return;
     }
     if (!data) { showNameStep(); return; }

@@ -6,12 +6,12 @@ echo   MyCircle is running at http://localhost:3000
 echo   Keep this window open while you use it. Press Ctrl+C to stop.
 echo.
 start "" cmd /c "timeout /t 2 >nul & start http://localhost:3000"
-where py >nul 2>nul
+py -c "import http.server" >nul 2>nul
 if %errorlevel%==0 (
   py -m http.server 3000
   goto :eof
 )
-where python >nul 2>nul
+python -c "import http.server" >nul 2>nul
 if %errorlevel%==0 (
   python -m http.server 3000
   goto :eof
