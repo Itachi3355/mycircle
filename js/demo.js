@@ -1,5 +1,5 @@
 // Demo mode: open http://localhost:3000/?demo to preview the UI with fake data and no sign-in.
-// Nothing is read from or saved to Supabase. Saving/deleting will show an error toast.
+// Demo uses bundled data and does not connect to Supabase.
 (function () {
   const rv = (id, user, rating, body, tip, m) => ({ id, user_id: user, rating, price: 2, visited_month: m || "2025-06", body, tip: tip || "", created_at: "2025-07-01", updated_at: "2025-07-0" + (1 + (id.length % 8)) });
   const P = (id, name, category, city, country, lat, lng, reviews, photos) => ({ id, name, category, address: "", city, country, lat, lng, created_by: "u1", reviews, photos: photos || [] });

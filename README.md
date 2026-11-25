@@ -15,8 +15,8 @@ Search a city ("New York") and the map flies there. The side panel lists the fri
 ## Run it on your computer
 
 1. Double-click **start.bat** in this folder. It serves the app at **http://localhost:3000** and opens your browser.
-   - It uses Python if you have it, otherwise `npx serve`. You can also run `py -m http.server 3000` yourself from this folder.
-   - Keep port **3000**. Supabase's sign-in email sends you back to `http://localhost:3000` by default.
+   - It uses Python if you have it, otherwise `npx serve`. You can also run `python -m http.server 3000` yourself from this folder.
+   - Keep port **3000** for local magic-link sign-in and allow that address in Supabase's redirect settings.
 2. Enter your email and click **Email me a sign-in link**. Open the link on the same computer.
 3. Pick your name, create your circle, and add a place with **Add a place**.
 
@@ -29,6 +29,28 @@ Supabase's built-in email sender is only meant for testing. It sends to the memb
 
 Then use **Invite friends** in your account menu (the round button, top right) to copy your circle's invite link.
 
+## Deploy on Vercel
+
+The production URL is [mycircle-inky.vercel.app](https://mycircle-inky.vercel.app/). The release build copies web assets into `dist/` and applies the response headers in [vercel.json](vercel.json). Production builds require the private 3D landing page because the current deployment includes it.
+
+From a checkout containing the private `landing/` project, install and build it, then package the site:
+
+```sh
+npm ci --prefix landing
+npm run build --prefix landing
+node --test tests/circle-data.test.mjs
+node scripts/build.mjs --require-landing
+```
+
+A Git-only checkout can run `node scripts/build.mjs` for a preview with the email sign-in form. Use a local prebuilt release for the full site so Vercel receives the bundled landing page. With the Vercel CLI linked to the existing MyCircle project, run `vercel pull --environment=production` and `vercel build --prod`, then stage with `vercel deploy --prebuilt --prod --skip-domain`. [Vercel CLI deployment guide](https://vercel.com/docs/cli/deploying-from-cli)
+
+Before promoting the staged deployment:
+
+- Use a separate preview build with a test Supabase project for authenticated testing. Set `MYCIRCLE_SUPABASE_URL` and `MYCIRCLE_SUPABASE_PUBLISHABLE_KEY` for that preview. Confirm the staged production build points to the live project before promoting it. The defaults in `js/config.js` point to the current live project.
+- Confirm Supabase's Site URL is the production origin, the exact callback URLs are allowed, and the custom SMTP sender delivers a magic link to an address outside the project team. If a Vercel preview has access protection, the recipient also needs access to that preview. [Redirect URLs](https://supabase.com/docs/guides/auth/redirect-urls) · [Custom SMTP](https://supabase.com/docs/guides/auth/auth-smtp)
+- Check the map, the 3D landing page, and `/?demo`. With two test accounts, create and join a circle, save and reload a review and trip budget, and add and remove a photo. Use a third account outside the circle to verify that circle data and private photo URLs cannot be retrieved through the API. [Supabase production security checklist](https://supabase.com/docs/guides/security/production-checklist)
+- Verify the current map, search, routing, and outline providers suit the expected traffic, and check the project’s backup and recovery settings. Promote the staged deployment with `vercel promote <deployment>` once the checks pass.
+
 ## How it works
 
 | File | What it does |
@@ -36,6 +58,7 @@ Then use **Invite friends** in your account menu (the round button, top right) t
 | `index.html` | Page layout: map, search box, side panel and dialogs |
 | `css/app.css` | Styles, including the bottom-sheet layout for phones |
 | `js/app.js` | All app logic: sign-in, circles, city search, friend view, adding reviews |
+| `js/circle-data.mjs` | Fetches members, places, reviews, photos, and trip budgets for one circle |
 | `js/config.js` | Supabase project URL and publishable key, map tiles, search service |
 | `js/country.js` | Country lookup, coverage maths and the country-shaped backdrop |
 | `js/globe.js` | **Globe** button: your circle's cities on a 3D globe, with arcs from your country and each friend's trips. Loaded only when opened |
@@ -99,7 +122,7 @@ Search any country, state or city and tap **Mark as complete**. The area is pain
 
 ## Contributing
 
-Developers and designers are welcome. Try it in 30 seconds with no sign-in: run `py -m http.server 3000` and open http://localhost:3000/?demo. See [CONTRIBUTING.md](CONTRIBUTING.md) for where things are and how to send a change.
+Developers and designers are welcome. Run `python -m http.server 3000` and open http://localhost:3000/?demo to try it with no sign-in. See [CONTRIBUTING.md](CONTRIBUTING.md) for where things are and how to send a change.
 
 ## License
 
